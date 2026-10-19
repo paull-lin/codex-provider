@@ -277,6 +277,63 @@ wire_api = "responses"
 
 Set `CODEX_POOL_API_KEY` in the Codex process environment to the same client key passed to the service container. The checked-in [test config](test/codex-config.toml) uses the same provider contract and was verified with Codex CLI `0.141.0`.
 
+## Claude Code CLI
+
+The Anthropic compatibility endpoints let Claude Code use the pool as an
+Anthropic-compatible gateway. The pool API key is still required; keep it in
+the process environment and do not put it in `settings.json`.
+
+Create `~/.claude/settings.codex-provider.json`:
+
+```json
+{
+  "model": "sonnet",
+  "modelOverrides": {
+    "claude-sonnet-5-5": "gpt-6.1-sol"
+  },
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:8317"
+  }
+}
+```
+
+`ANTHROPIC_BASE_URL` points to the pool listener without a trailing `/v1`;
+Claude Code appends `/v1/messages`. The `modelOverrides` entry keeps Claude
+Code's known `sonnet` model picker row while sending `gpt-6.1-sol` to the pool.
+If a later Claude Code release reports a different canonical Sonnet model ID,
+use that ID as the key and keep the provider model as the value.
+
+Set the same client key that the pool container uses, then start Claude Code
+with the test settings file:
+
+```bash
+export ANTHROPIC_API_KEY="$CODEX_POOL_API_KEY"
+claude --settings ~/.claude/settings.codex-provider.json --model sonnet
+```
+
+For a non-interactive smoke test:
+
+```bash
+claude --settings ~/.claude/settings.codex-provider.json \
+  --model sonnet --bare --print --tools "" \
+  "Reply with exactly OK."
+```
+
+The provider routes these requests through `POST /v1/messages` and supports
+text messages, tool definitions, tool results, non-streaming responses,
+Anthropic SSE responses, and `POST /v1/messages/count_tokens`. The token-count
+endpoint returns a deterministic estimate because Codex upstream does not
+expose Anthropic's tokenizer. Images and provider-specific thinking blocks are
+not accepted by this compatibility layer.
+
+To check the authenticated connection before starting Claude Code:
+
+```bash
+curl -fsS \
+  -H "Authorization: Bearer $CODEX_POOL_API_KEY" \
+  http://127.0.0.1:8317/healthz
+```
+
 ## Implemented Surface
 
 - API-key authentication from Bearer, raw Authorization, `X-Goog-Api-Key`, `X-Api-Key`, `key`, and `auth_token`.
@@ -289,6 +346,8 @@ Set `CODEX_POOL_API_KEY` in the Codex process environment to the same client key
   when it ends in a capacity-class `response.failed` before any client-visible
   byte; committed or semantically active streams are never retried.
 - `POST /v1/chat/completions`, including translation to a Responses upstream.
+- `POST /v1/messages` and `/v1/messages/count_tokens` for Claude Code and other
+  Anthropic-compatible clients.
 - Model aliases and `(thinking-tier)` suffix translation.
 - Thread-aware sticky balancing and failover with idle TTL, soft parent-account affinity, independent prompt-cache-key policy, per-model cooldowns, optional Pro-quota preservation, response-id continuation binding, and JSON persistence in `/data`. New sessions distribute across equal-priority healthy accounts; when an upstream account returns `429` or repeated server errors, the request retries other configured accounts and successful failover rewrites the sticky binding.
 - Main/subagent cache-read, cache-write, request-hit, cold-start, affinity, and failover observability, a bounded and redacted 24-hour request correlation panel, a public 48-hour in-memory throughput/prompt-cache-hit time series, and management-only per-account throughput.
