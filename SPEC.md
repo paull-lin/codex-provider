@@ -1938,7 +1938,27 @@ If upstream requires Responses format, translate request.
 
 If using provider gateway with `wireApi=chat_completions`, forward as Chat Completions.
 
-### 12.3 Streaming
+### 12.3 Anthropic Messages compatibility
+
+`POST /v1/messages` and `POST /v1/messages/count_tokens` are Anthropic-compatible
+adapter endpoints for Claude Code and other Anthropic SDK clients. They use the
+same API-key authentication and account routing as the OpenAI-compatible routes.
+
+The adapter translates text messages, system prompts, tool definitions, tool
+choice, token limits, temperature, top-p, stop sequences, and stream mode into
+the existing Chat Completions proxy path. Responses are translated back into
+Anthropic message objects and Anthropic SSE lifecycle events. This boundary is
+additive: the existing OpenAI routes retain their wire contracts, and the
+adapter must not create a second routing or credential implementation.
+
+`count_tokens` returns a deterministic estimate when the upstream does not expose
+Anthropic tokenization. It is suitable for client budgeting only; upstream usage
+remains authoritative for telemetry and billing. Unsupported image blocks return
+`400 invalid_request_error` rather than silently dropping input. Upstream failures
+use Anthropic's `{type:"error",error:{type,message}}` shape with the corresponding
+HTTP status.
+
+### 12.4 Streaming
 
 For streaming responses:
 

@@ -1269,6 +1269,8 @@ func (a *app) mux() http.Handler {
 	mux.HandleFunc("POST /v1/responses", a.trackInFlight(a.requireAPIKey(a.handleResponses)))
 	mux.HandleFunc("POST /v1/responses/compact", a.trackInFlight(a.requireAPIKey(a.handleResponses)))
 	mux.HandleFunc("POST /v1/chat/completions", a.trackInFlight(a.requireAPIKey(a.handleChatCompletions)))
+	mux.HandleFunc("POST /v1/messages", a.trackInFlight(a.requireAPIKey(a.handleAnthropicMessages)))
+	mux.HandleFunc("POST /v1/messages/count_tokens", a.requireAPIKey(a.handleAnthropicCountTokens))
 	mux.HandleFunc("GET /internal/inflight", a.handleInFlight)
 	// The combined-port root is the public control page. It is intentionally
 	// visible without a password; owner-only actions are protected by
@@ -2280,10 +2282,18 @@ func (a *app) writeChatFromResponse(w http.ResponseWriter, response *http.Respon
 	}
 	text := outputText(data)
 	created := time.Now().Unix()
-	writeJSON(w, http.StatusOK, map[string]any{
+	chatResponse := map[string]any{
 		"id": "chatcmpl_" + randomID(), "object": "chat.completion", "created": created, "model": model,
 		"choices": []map[string]any{{"index": 0, "message": map[string]any{"role": "assistant", "content": text}, "finish_reason": "stop"}},
-	})
+	}
+	if usage, ok := data["usage"].(map[string]any); ok {
+		chatResponse["usage"] = map[string]any{
+			"prompt_tokens":     usage["input_tokens"],
+			"completion_tokens": usage["output_tokens"],
+			"total_tokens":      usage["total_tokens"],
+		}
+	}
+	writeJSON(w, http.StatusOK, chatResponse)
 	info := responseInfoFromPayload(data)
 	info.CompletedAt = time.Now().UTC()
 	return info, true
