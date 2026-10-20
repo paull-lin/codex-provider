@@ -66,6 +66,8 @@ services:
     stop_grace_period: 150s
     environment:
       ANTHROPIC_ADAPTER_POOL_URL: http://connection-backup:8317
+      # Fixed for every Claude request (user choice); unset to follow Claude Code.
+      ANTHROPIC_ADAPTER_REASONING_EFFORT: ${ANTHROPIC_ADAPTER_REASONING_EFFORT:-medium}
     networks: [internal]
     depends_on:
       connection-backup: {condition: service_healthy}
