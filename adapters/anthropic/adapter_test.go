@@ -381,7 +381,7 @@ func TestRequestMappingAndConfiguration(t *testing.T) {
 	if _, ok := v["max_output_tokens"]; ok {
 		t.Fatal("unsupported max_output_tokens")
 	}
-	if v["parallel_tool_calls"] != true || v["reasoning"].(map[string]any)["summary"] != "auto" {
+	if v["parallel_tool_calls"] != true || v["tool_choice"] != "auto" || v["text"].(map[string]any)["verbosity"] != "low" || v["reasoning"].(map[string]any)["summary"] != "auto" {
 		t.Fatal(v)
 	}
 	tool := v["tools"].([]any)[0].(map[string]any)
