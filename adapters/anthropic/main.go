@@ -20,6 +20,9 @@ type adapter struct {
 	modelMap                       []modelRule
 	client                         *http.Client
 	pingInterval                   time.Duration
+	// fixedEffort, when set, replaces the effort derived from Claude Code so
+	// the operator controls upstream cost and latency for every request.
+	fixedEffort string
 }
 type modelRule struct{ pattern, model string }
 
@@ -40,6 +43,12 @@ func newAdapter() (*adapter, error) {
 	if err != nil {
 		return nil, err
 	}
+	effort := env("ANTHROPIC_ADAPTER_REASONING_EFFORT", "")
+	switch effort {
+	case "", "low", "medium", "high", "xhigh":
+	default:
+		return nil, fmt.Errorf("ANTHROPIC_ADAPTER_REASONING_EFFORT must be low, medium, high or xhigh")
+	}
 	return &adapter{
 		poolURL: base + "/v1/responses", modelMap: rules,
 		originator: env("ANTHROPIC_ADAPTER_ORIGINATOR", "codex_exec"),
@@ -47,6 +56,7 @@ func newAdapter() (*adapter, error) {
 		// A fixed pool destination must not redirect the caller's credential elsewhere.
 		client:       &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
 		pingInterval: 15 * time.Second,
+		fixedEffort:  effort,
 	}, nil
 }
 
@@ -175,8 +185,16 @@ func (a *adapter) messages(w http.ResponseWriter, r *http.Request) {
 	session := sessionID(r, req)
 	// Codex rejects max_output_tokens; the pool strips it even on native-shaped
 	// requests. Do not imply that Anthropic max_tokens is enforced here.
-	body := map[string]any{"model": a.mapModel(req.Model), "input": input, "stream": true, "store": false, "include": []string{"reasoning.encrypted_content"}, "parallel_tool_calls": true, "prompt_cache_key": session}
-	if effort := requestEffort(req); effort != "" {
+	// Keep the request in the pinned Codex Responses shape wherever Anthropic
+	// leaves a value unspecified. These stable defaults match Codex
+	// (`tool_choice:auto`, low text verbosity) without inventing its internal
+	// client metadata.
+	body := map[string]any{"model": a.mapModel(req.Model), "input": input, "stream": true, "store": false, "include": []string{"reasoning.encrypted_content"}, "parallel_tool_calls": true, "tool_choice": "auto", "text": map[string]any{"verbosity": "low"}, "prompt_cache_key": session}
+	effort := requestEffort(req)
+	if a.fixedEffort != "" {
+		effort = a.fixedEffort
+	}
+	if effort != "" {
 		body["reasoning"] = map[string]any{"effort": effort, "summary": "auto"}
 	}
 	if len(tools) > 0 {
