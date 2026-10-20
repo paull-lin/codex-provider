@@ -1,0 +1,12 @@
+# Keep the public UI behind the same gateway as provider traffic. Publishing
+# control here would bypass that single ingress; 8318 is never host-published.
+# Project, credential volume and env file are selected by the operator's env.
+services:
+  control:
+    ports: !reset []
+  connection-main:
+    ports: !reset []
+  connection-backup:
+    ports: !reset []
+  gateway:
+    ports: !override ["0.0.0.0:${CODEX_ROLES_PORT:-8317}:9100"]

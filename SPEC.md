@@ -286,6 +286,16 @@ openai_base_url = "https://<pool-host>/k/<pool-api-key>/backend-api/codex"
 
 ### 2.4 Optional control / connection roles (direct-mode MVP)
 
+The roles gateway sends the explicitly registered provider paths (including
+Responses WebSocket and native Codex backend paths) to main/backup connections,
+and Anthropic Messages/count-tokens to the adapter backed by the backup
+connection. All other paths, including the public dashboard, admin login/assets
+and public `/healthz`, go to control. HAProxy does not rewrite native requests
+or replay HTTP failures; only pre-send connect failures permit redispatch.
+The production override publishes only the gateway; control's public listener
+and its separate credential broker are not published on the host. Request-level
+routing statistics remain on connections and are not aggregated into control.
+
 `CODEX_POOL_ROLE` is empty by default and preserves the monolith's existing
 behavior. `control` and `connection` require a nonempty
 `CODEX_POOL_INTERNAL_SECRET` distinct from public API keys. The retired sidecar

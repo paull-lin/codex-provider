@@ -1,11 +1,11 @@
-name: codex-roles
+name: ${CODEX_ROLES_PROJECT:-codex-roles}
 
 x-pool: &pool
   image: ${CODEX_ROLES_IMAGE:-codex-pool:roles-v2}
   restart: unless-stopped
   stop_grace_period: 150s
   env_file:
-    - path: .env
+    - path: ${CODEX_ROLES_ENV_FILE:-.env}
       required: false
   networks: [internal]
   healthcheck:
@@ -24,7 +24,7 @@ x-role-env: &role-env
 services:
   control:
     <<: *pool
-    container_name: codex-roles-control
+    container_name: ${CODEX_ROLES_PROJECT:-codex-roles}-control
     environment:
       <<: *role-env
       CODEX_POOL_ROLE: control
@@ -35,7 +35,7 @@ services:
 
   connection-main:
     <<: *pool
-    container_name: codex-roles-conn-main
+    container_name: ${CODEX_ROLES_PROJECT:-codex-roles}-conn-main
     environment:
       <<: *role-env
       CODEX_POOL_ROLE: connection
@@ -47,7 +47,7 @@ services:
 
   connection-backup:
     <<: *pool
-    container_name: codex-roles-conn-backup
+    container_name: ${CODEX_ROLES_PROJECT:-codex-roles}-conn-backup
     environment:
       <<: *role-env
       CODEX_POOL_ROLE: connection
@@ -57,29 +57,45 @@ services:
     ports: ["127.0.0.1:9182:8317"]
     volumes: [backup-runtime:/data]
 
+  anthropic-adapter:
+    image: ${ANTHROPIC_ADAPTER_IMAGE:-anthropic-adapter:mvp}
+    build:
+      context: ../..
+      dockerfile: adapters/anthropic/Dockerfile
+    restart: unless-stopped
+    stop_grace_period: 150s
+    environment:
+      ANTHROPIC_ADAPTER_POOL_URL: http://connection-backup:8317
+    networks: [internal]
+    depends_on:
+      connection-backup: {condition: service_healthy}
+
   gateway:
     image: haproxy:3.2-alpine
-    container_name: codex-roles-gateway
+    container_name: ${CODEX_ROLES_PROJECT:-codex-roles}-gateway
     restart: unless-stopped
     ports: ["127.0.0.1:9100:9100"]
     volumes: ["./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro"]
     networks: [internal]
     depends_on:
+      control: {condition: service_healthy}
+      anthropic-adapter: {condition: service_started}
       connection-main: {condition: service_healthy}
       connection-backup: {condition: service_healthy}
 
 networks:
   # Private bridge with outbound OAuth/Codex access, no external shared network.
   internal:
-    name: codex-roles-internal
+    name: ${CODEX_ROLES_PROJECT:-codex-roles}-internal
     driver: bridge
 
 volumes:
-  # Stop codex-exp-pool BEFORE mounting: rotating credentials need one writer.
+  # Stop the previous writer BEFORE mounting (experiment: codex-exp-pool;
+  # production: codex-pool). Rotating credentials must have exactly one writer.
   control-data:
     external: true
-    name: codex-exp-pool-data
+    name: ${CODEX_ROLES_CONTROL_VOLUME:-codex-exp-pool-data}
   main-runtime:
-    name: codex-roles-main-runtime
+    name: ${CODEX_ROLES_PROJECT:-codex-roles}-main-runtime
   backup-runtime:
-    name: codex-roles-backup-runtime
+    name: ${CODEX_ROLES_PROJECT:-codex-roles}-backup-runtime

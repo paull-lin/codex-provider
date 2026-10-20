@@ -1,8 +1,14 @@
 # Control / connection MVP
 
+For this host's production migration and rollback, use [MIGRATION.md](MIGRATION.md)
+and `compose.production.yaml`. The base file preserves experiment ports/names;
+production publishes only HAProxy, keeping the existing public UI and provider
+URL together. `verify.sh` exercises routing and rolling upgrade on fresh
+disposable Docker resources; it never uses an existing account volume.
+
 Build `codex-pool:roles-v2` with the repository image script, copy `.env.example`
 to `.env`, and replace all placeholders (different public/internal secrets).
-Compose 2.24+ is required.
+Compose 2.24.4+ is required (production uses `!override`).
 Validate with `docker compose -f deploy/roles/compose.yaml config -q`.
 Building/testing this patch does not deploy anything.
 
@@ -48,7 +54,9 @@ and rotating service logs. It never writes config or auth files.
 
 The image uses upstream's `supervisor.sh` and bundled `codex-upstream`; the
 retired CLIProxyAPI sidecar and gateway-mode role guard are not used. Native
-`/k/<key>/backend-api/codex/` routes are forwarded by the gateway as well as `/v1`.
+`/k/<key>/backend-api/codex/` provider routes are forwarded to connections, as
+are the registered `/v1` provider routes. Messages/count-tokens reach the
+Anthropic adapter (backed by connection-backup); everything else reaches control.
 See [AUDIT.md](AUDIT.md) for the 14d5073 → 297a5dd call-site audit and limitations.
 
 Upgrade control first, then connections (the new control must support the old

@@ -5,13 +5,26 @@ set -eu
 DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 : "${1:?usage: sh deploy/roles/upgrade.sh NEW_IMAGE}"
 export CODEX_ROLES_IMAGE=$1
-NEXT=codex-roles-upgrade-next
-PROBE=codex-roles-upgrade-probe
-PROBE_VOLUME=codex-roles-upgrade-probe-data
+# Honor the same COMPOSE_FILE/COMPOSE_ENV_FILES/project selection as deployment.
+# Derive container names from Compose so a production or test upgrade can never
+# fall back to the experiment's hard-coded containers or probe volume.
+export COMPOSE_FILE=${COMPOSE_FILE:-$DIR/compose.yaml}
 
-compose() { docker compose -f "$DIR/compose.yaml" "$@"; }
+compose() { docker compose --project-directory "$DIR" "$@"; }
+GATEWAY=$(compose ps -q gateway)
+MAIN=$(compose ps -q connection-main)
+BACKUP=$(compose ps -q connection-backup)
+for id in "$GATEWAY" "$MAIN" "$BACKUP"; do
+  [ -n "$id" ] || { echo 'Selected project must have a running gateway and both connections' >&2; exit 1; }
+done
+PROJECT=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$GATEWAY")
+MAIN=$(docker inspect --format '{{.Name}}' "$MAIN" | sed 's|^/||')
+BACKUP=$(docker inspect --format '{{.Name}}' "$BACKUP" | sed 's|^/||')
+NEXT=$PROJECT-upgrade-next
+PROBE=$PROJECT-upgrade-probe
+PROBE_VOLUME=$PROJECT-upgrade-probe-data
 gateway() {
-  reply=$(docker exec codex-roles-gateway sh -c 'printf "%s\n" "$1" | nc -w 2 127.0.0.1 9999' sh "$1") || return 1
+  reply=$(docker exec "$GATEWAY" sh -c 'printf "%s\n" "$1" | nc -w 2 127.0.0.1 9999' sh "$1") || return 1
   # HAProxy reports command errors in the response even when nc exits zero.
   [ -z "$(printf '%s' "$reply" | tr -d '\r\n')" ] || { printf '%s\n' "$reply" >&2; return 1; }
 }
@@ -45,15 +58,15 @@ trap 'exit 1' INT TERM
 
 # Leftovers may be the only healthy replacement after interruption; never
 # delete them blindly. Inspect manually before retrying an interrupted run.
-for name in "$NEXT" "$PROBE" codex-roles-conn-main-previous codex-roles-conn-backup-previous; do
+for name in "$NEXT" "$PROBE" "$MAIN-previous" "$BACKUP-previous"; do
   if docker container inspect "$name" >/dev/null 2>&1; then
     echo "Existing $name; inspect the interrupted upgrade before continuing" >&2
     exit 1
   fi
 done
 docker image inspect "$CODEX_ROLES_IMAGE" >/dev/null
-healthy codex-roles-conn-main
-healthy codex-roles-conn-backup
+healthy "$MAIN"
+healthy "$BACKUP"
 
 replace() {
   service=$1
@@ -94,8 +107,10 @@ replace() {
   # A temporary empty name permits the extra stopped replica. Clearing depends_on
   # keeps control outside this operation. The next ordinary up may reconcile the
   # temporary name's config hash; it can now do so without a one-off name clash.
+  # Explicit -f would replace COMPOSE_FILE, losing production's unpublished
+  # ports. Append stdin to the selected files instead of dropping overrides.
   if printf 'services:\n  %s:\n    container_name: !reset null\n    depends_on: !reset {}\n' "$service" |
-    compose -f - create --no-recreate --scale "$service=$replicas" "$service" >/dev/null &&
+    COMPOSE_FILE="$COMPOSE_FILE:-" compose create --no-recreate --scale "$service=$replicas" "$service" >/dev/null &&
     docker start "$CANDIDATE" >/dev/null && healthy "$CANDIDATE"; then
     # Keep the stopped original through rename/readiness failures as well.
     docker rename "$old" "$old-previous"
@@ -110,10 +125,10 @@ replace() {
   fi
 }
 
-replace connection-backup codex-roles-conn-backup
-healthy codex-roles-conn-backup
-replace connection-main codex-roles-conn-main
-healthy codex-roles-conn-main
+replace connection-backup "$BACKUP"
+healthy "$BACKUP"
+replace connection-main "$MAIN"
+healthy "$MAIN"
 # Explicit failback for this upgrade; ordinary recovery never does it.
 gateway 'clear table connections'
 echo 'Connection upgrade complete; main ready, backup retained'

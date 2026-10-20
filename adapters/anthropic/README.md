@@ -1,9 +1,13 @@
 # Anthropic Messages adapter
 
+The roles stack now includes this service behind its gateway, forwarding to
+`connection-backup:8317`. See [the production migration runbook](../../deploy/roles/MIGRATION.md)
+for the shared public URL, isolated verification and rollback procedure.
+
 A standalone Go sidecar for Claude Code in front of the backup pool connection
 node. It shares the repository's Go module, uses only the standard library, and
-forwards inference to the pool's streaming `POST /v1/responses`. All adapter code,
-tests and deployment documentation live here; no upstream or role files change.
+forwards inference to the pool's streaming `POST /v1/responses`. Adapter code and
+tests live here; deployment wiring lives under `deploy/roles`.
 
 ## Build and operator wiring
 
@@ -126,7 +130,7 @@ adapter follows no upstream redirects and logs neither keys nor request bodies.
   16 MiB respectively. Non-streaming necessarily buffers the completed output.
 
 Batches, files, citations, web search/server tools, prompt-cache breakpoints,
-WebSocket upstream, UI and role deployment integration are deferred. This
+WebSocket upstream and a dedicated adapter UI are deferred. This
 adapter provides wire compatibility; underlying model behavior and reasoning
 summaries differ from native Anthropic models. Live Claude Code ↔ real backup
 pool operation requires operator validation; the automated tests use fake pools

@@ -1,0 +1,17 @@
+# Applied only by verify.sh after it selects fresh names/volume and production
+# port isolation. No fixture contains account credentials or real upstream URLs.
+x-mock: &mock
+  image: node:22-bookworm-slim
+  entrypoint: [node, /test/mock.cjs]
+  stop_grace_period: 2s
+  volumes: ["./test:/test:ro"]
+services:
+  control:
+    <<: *mock
+    environment: {TEST_BACKEND: control}
+  connection-main:
+    <<: *mock
+    environment: {TEST_BACKEND: connection-main}
+  connection-backup:
+    <<: *mock
+    environment: {TEST_BACKEND: connection-backup}
