@@ -251,7 +251,10 @@ func (s *wsSession) startResponse(message []byte, payload map[string]any) bool {
 	sent := s.sent
 	s.mu.Unlock()
 	candidate, err := a.selectAccountForRoute(&route, model, map[string]bool{})
-	if err != nil || candidate.ID != bound.ID {
+	// A control snapshot can replace a slot's identity without changing its ID.
+	// Keep Codex's reconnect/resend behavior (codex-api endpoint/responses_websocket.rs)
+	// after a send, but preserve upstream's first-request redial before any send.
+	if err != nil || candidate.ID != bound.ID || !a.connectionAccountCurrent(bound) {
 		if sent {
 			// Nothing of this request reached upstream; Codex resends it in full
 			// after reconnecting, and routing places it then.

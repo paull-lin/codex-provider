@@ -1,0 +1,85 @@
+name: codex-roles
+
+x-pool: &pool
+  image: ${CODEX_ROLES_IMAGE:-codex-pool:roles-v2}
+  restart: unless-stopped
+  stop_grace_period: 150s
+  env_file:
+    - path: .env
+      required: false
+  networks: [internal]
+  healthcheck:
+    test: [CMD, node, -e, "fetch('http://127.0.0.1:8317/healthz', {headers:{Authorization:'Bearer '+process.env.CODEX_POOL_API_KEY},signal:AbortSignal.timeout(3000)}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+    interval: 5s
+    timeout: 4s
+    retries: 3
+    start_period: 10s
+
+x-role-env: &role-env
+  CODEX_POOL_ADDR: 0.0.0.0:8317
+  CODEX_POOL_ALLOW_REMOTE_ADMIN: "true"
+  CODEX_POOL_DATA_DIR: /data
+  CODEX_POOL_SHUTDOWN_GRACE: 120s
+
+services:
+  control:
+    <<: *pool
+    container_name: codex-roles-control
+    environment:
+      <<: *role-env
+      CODEX_POOL_ROLE: control
+      # Private broker only: never add this listener to ports or tailscale serve.
+      CODEX_POOL_INTERNAL_ADDR: ${CODEX_POOL_INTERNAL_ADDR:-0.0.0.0:8318}
+    ports: ["127.0.0.1:9180:8317"]
+    volumes: [control-data:/data]
+
+  connection-main:
+    <<: *pool
+    container_name: codex-roles-conn-main
+    environment:
+      <<: *role-env
+      CODEX_POOL_ROLE: connection
+      CODEX_POOL_CONTROL_URL: http://control:8318
+    depends_on:
+      control: {condition: service_healthy}
+    ports: ["127.0.0.1:9181:8317"]
+    volumes: [main-runtime:/data]
+
+  connection-backup:
+    <<: *pool
+    container_name: codex-roles-conn-backup
+    environment:
+      <<: *role-env
+      CODEX_POOL_ROLE: connection
+      CODEX_POOL_CONTROL_URL: http://control:8318
+    depends_on:
+      control: {condition: service_healthy}
+    ports: ["127.0.0.1:9182:8317"]
+    volumes: [backup-runtime:/data]
+
+  gateway:
+    image: haproxy:3.2-alpine
+    container_name: codex-roles-gateway
+    restart: unless-stopped
+    ports: ["127.0.0.1:9100:9100"]
+    volumes: ["./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro"]
+    networks: [internal]
+    depends_on:
+      connection-main: {condition: service_healthy}
+      connection-backup: {condition: service_healthy}
+
+networks:
+  # Private bridge with outbound OAuth/Codex access, no external shared network.
+  internal:
+    name: codex-roles-internal
+    driver: bridge
+
+volumes:
+  # Stop codex-exp-pool BEFORE mounting: rotating credentials need one writer.
+  control-data:
+    external: true
+    name: codex-exp-pool-data
+  main-runtime:
+    name: codex-roles-main-runtime
+  backup-runtime:
+    name: codex-roles-backup-runtime

@@ -595,6 +595,7 @@ type state struct {
 }
 
 type app struct {
+	role *poolRole
 	// inFlight counts provider requests (responses, compact, chat) whose
 	// handler has not returned, streams included. The shutdown drain and the
 	// deploy script's idle wait both read it.
@@ -812,6 +813,9 @@ func newAppFromEnv() (*app, error) {
 	} else {
 		a.logger.Printf("persistent log unavailable: %v", err)
 	}
+	if err := a.configureRole(); err != nil {
+		return nil, err
+	}
 	if err := a.load(); err != nil {
 		return nil, err
 	}
@@ -849,6 +853,9 @@ func streamingHTTPClient() *http.Client {
 }
 
 func (a *app) load() error {
+	if a.isConnection() {
+		return a.loadConnection()
+	}
 	if err := os.MkdirAll(filepath.Join(a.dataDir, "state"), 0o700); err != nil {
 		return fmt.Errorf("create data directory: %w", err)
 	}
@@ -994,9 +1001,16 @@ func (a *app) serve() error {
 		return fmt.Errorf("listen combined HTTP service: %w", err)
 	}
 	a.logger.Printf("provider API and control UI listening on %s", a.listenAddress)
-	a.startQuotaRefresher(context.Background())
+	if a.isConnection() {
+		a.startControlPoller(context.Background())
+	} else {
+		a.startQuotaRefresher(context.Background())
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
+	if a.role != nil && a.role.name == "control" {
+		return a.serveControlUntilStopped(ctx, listener)
+	}
 	return a.serveUntilStopped(ctx, listener, a.mux())
 }
 
@@ -1364,7 +1378,7 @@ func (a *app) mux() http.Handler {
 	mux.HandleFunc("DELETE /admin/api/sticky-sessions/", a.requireAdmin(a.handleStickySessionDelete))
 	mux.HandleFunc("POST /admin/api/accounts/", a.requireAdmin(a.handleAccountAction))
 	mux.HandleFunc("DELETE /admin/api/accounts/", a.requireAdmin(a.handleAccountDelete))
-	return recovery(mux)
+	return recovery(a.roleHandler(mux))
 }
 
 func (a *app) handleHealthz(w http.ResponseWriter, _ *http.Request) {
@@ -6693,6 +6707,9 @@ func (a *app) accountCodexHome(id string) string {
 }
 
 func (a *app) saveLocked() error {
+	if a.isConnection() {
+		return a.saveConnectionLocked()
+	}
 	a.config.UpdatedAt = time.Now().UTC()
 	a.state.UpdatedAt = time.Now().UTC()
 	if err := writeJSONAtomic(filepath.Join(a.dataDir, "config.json"), a.config); err != nil {
@@ -6702,6 +6719,11 @@ func (a *app) saveLocked() error {
 }
 
 func (a *app) saveCompletedAuthVerificationLocked() error {
+	// Login normally runs only on control; this alternate save path must never
+	// bypass the connection node's runtime-only persistence boundary.
+	if a.isConnection() {
+		return a.saveConnectionLocked()
+	}
 	now := time.Now().UTC()
 	a.config.UpdatedAt = now
 	a.state.UpdatedAt = now
@@ -7636,6 +7658,9 @@ type codexResetCreditDetail struct {
 }
 
 func (a *app) codexAuth(item account) (codexAuthInfo, error) {
+	if a.isConnection() {
+		return a.connectionAuth(item.ID, time.Now())
+	}
 	auth, err := a.readCodexAuthFile(item)
 	if err != nil {
 		return codexAuthInfo{}, markAccountAuthError(err)
@@ -7644,6 +7669,11 @@ func (a *app) codexAuth(item account) (codexAuthInfo, error) {
 }
 
 func (a *app) readCodexAuthFile(item account) (codexAuthFile, error) {
+	// Raw-file callers cannot substitute a lease: connection nodes have no
+	// credential files, even if an old accounts directory exists on the volume.
+	if a.isConnection() {
+		return codexAuthFile{}, errors.New("connection nodes do not read auth.json")
+	}
 	path := filepath.Join(a.accountCodexHome(item.ID), "auth.json")
 	var lastErr error
 	for attempt := 0; attempt < codexAuthReadAttempts; attempt++ {
@@ -7736,6 +7766,9 @@ func (a *app) refreshCodexAuthIfNeededContext(ctx context.Context, item account)
 // use, so refreshing again with a token another request just rotated would
 // spend it twice; the caller retries with whatever is current instead.
 func (a *app) refreshCodexAuthAfterRejection(ctx context.Context, item account, rejectedAccessToken string) (codexAuthInfo, error) {
+	if a.isConnection() {
+		return a.connectionLease(ctx, item.ID, rejectedAccessToken)
+	}
 	lock := a.codexAuthLock(item.ID)
 	lock.Lock()
 	defer lock.Unlock()
@@ -7753,6 +7786,11 @@ func (a *app) refreshCodexAuthAfterRejection(ctx context.Context, item account, 
 }
 
 func (a *app) refreshCodexAuthContext(ctx context.Context, item account, force bool) error {
+	// Only control owns rotating refresh tokens. Connection callers must use
+	// refreshedCodexAuthContext or refreshCodexAuthAfterRejection for access-token leases.
+	if a.isConnection() {
+		return errors.New("connection nodes lease credentials through control")
+	}
 	home := a.accountCodexHome(item.ID)
 	path := filepath.Join(home, "auth.json")
 	auth, err := a.readCodexAuthFile(item)
@@ -7794,6 +7832,9 @@ func (a *app) refreshedCodexAuth(item account) (codexAuthInfo, error) {
 }
 
 func (a *app) refreshedCodexAuthContext(ctx context.Context, item account) (codexAuthInfo, error) {
+	if a.isConnection() {
+		return a.connectionLease(ctx, item.ID, "")
+	}
 	lock := a.codexAuthLock(item.ID)
 	lock.Lock()
 	defer lock.Unlock()
@@ -9251,6 +9292,11 @@ func (a *app) startPublicRepairJobLocked(item account) (loginJob, error) {
 }
 
 func (a *app) startLoginJobWithPolicyLocked(item account, publicRepair bool) (loginJob, error) {
+	// Keep direct callers behind the same ownership boundary as the HTTP mux;
+	// a login child writes auth.json outside the normal credential hooks.
+	if a.isConnection() {
+		return loginJob{}, errors.New("connection nodes do not run login jobs")
+	}
 	if a.jobs == nil {
 		a.jobs = map[string]*loginJob{}
 	}

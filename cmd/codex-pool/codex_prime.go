@@ -28,6 +28,11 @@ import (
 // Without the CLI (tests, a stripped image) the prime is skipped, not
 // replaced by a composed request.
 func (a *app) primeWithCodexCLI(ctx context.Context, candidate account, model string) error {
+	// Priming owns an auth-file read and creates a temporary auth.json. A
+	// connection lease must never enable that control-only credential path.
+	if a.isConnection() {
+		return errors.New("Codex quota priming requires control")
+	}
 	runner := a.codexPrimeRunner
 	if runner == nil {
 		if _, err := exec.LookPath("codex"); err != nil {

@@ -172,6 +172,12 @@ func codexBackendHeaders(agent clientAgent, auth codexAuthInfo, accountID string
 // codex-upstream in the given native header order. Without codex-upstream
 // (tests) it is sent from Go with the same headers.
 func (a *app) sendCodexOwnRequest(ctx context.Context, accountID, method, target, order string, header http.Header, body []byte) (*http.Response, error) {
+	// Refresh, usage, metadata and reset credits belong to control. Connection
+	// nodes lease credentials and relay client calls through sendCodexBackend;
+	// never let a new maintenance caller spend or rotate credentials here.
+	if a.isConnection() {
+		return nil, errors.New("Codex maintenance requests require control")
+	}
 	viaTransport := a.codexTransportURL != ""
 	endpoint := target
 	if viaTransport {

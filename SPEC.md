@@ -284,6 +284,93 @@ openai_base_url = "https://<pool-host>/k/<pool-api-key>/backend-api/codex"
 - **Measured.** `wire-capture.sh` runs the same turn through this endpoint and fails unless what reaches upstream equals a native Codex outright, body included. Doing so first caught the hosted-tool filter and a TLS session resumption a native Codex never performs (codex-upstream now builds a WebSocket connector per connection, as Codex does).
 ---
 
+### 2.4 Optional control / connection roles (direct-mode MVP)
+
+`CODEX_POOL_ROLE` is empty by default and preserves the monolith's existing
+behavior. `control` and `connection` require a nonempty
+`CODEX_POOL_INTERNAL_SECRET` distinct from public API keys. The retired sidecar
+gateway setting is rejected globally; roles no longer have a separate gateway
+mode guard. The control remains the sole credential/config writer, login
+executor, token refresher, and quota poller/primer.
+
+Control adds a private-only listener, `CODEX_POOL_INTERNAL_ADDR` (default
+`0.0.0.0:8318`), for `GET /internal/state`, a content-versioned config/account,
+credential-usability/expiry and quota snapshot with no tokens or provider keys.
+Identity fallback metadata is included so routing needs no auth file.
+`POST /internal/credentials/{account}` uses the existing refresh path and returns
+only `access_token`, `chatgpt_account_id`, `fedramp`, and `expires_at`.
+`POST /internal/credentials/{account}/rejected` accepts JSON `access_token` and
+uses the existing per-account CAS refresh. Both refuse disabled or pending
+login/verification accounts with 409. Unknown/expired resulting JWT expiry is
+refused. The internal API accepts only `X-Codex-Pool-Internal-Secret`, compares
+it in constant time, fails closed when unset, and sets `Cache-Control: no-store`.
+This secret never grants access to public/provider/admin routes.
+The normal `CODEX_POOL_ADDR` listener returns `404` for the state and credential
+paths, even with the secret; only the internal listener serves them. The
+internal listener shuts down with the normal listener and is not published by
+the roles Compose stack. Connection nodes use `CODEX_POOL_CONTROL_URL` pointing
+to its port (`http://control:8318` in the stack). The loopback-only
+`GET /internal/inflight` probe remains on the normal listener.
+
+Connection requires `CODEX_POOL_CONTROL_URL`, polls about every 5s, and keeps
+the full upstream routing, retries, pre-commit and HTTP/WS implementation.
+Auth eligibility/identity reads are memory-only; first use leases a credential,
+reused until expiry minus the existing five-minute refresh margin. HTTP and WS
+401 handling forwards the rejected token. An offline connection serves only
+cached, unexpired, non-rejected leases, at most
+`CODEX_POOL_CONTROL_OFFLINE_MAX` (positive Go duration, default `30m`) since its
+last successful snapshot. Last-known disabled/pending slots never serve.
+Startup requires a fresh snapshot. Propagation is polling-based, not immediate
+revocation; in-flight work is not cancelled by a snapshot change.
+
+Applying disable/pool removal clears sticky routes; deletion or changed identity
+uses monolith identity cleanup. Identity markers persist with runtime so restart
+cannot inherit a replaced slot's history. A same-slot WS identity change closes
+the socket before its next turn once any request has been sent; before the first
+send it redials, preserving the handshake-selection behavior in 2.3. Recorded
+turn states from the replaced identity are invalidated even though the local
+slot ID stays the same. Control quota polling does not erase local auth
+quarantine until a later successful control quota read establishes recovery.
+Connection writes only its own `state/runtime.json` and rotating service logs, never config/auth files,
+and skips credential reconciliation, quota polling/priming and admin mutations
+(including public repair/login). Its `/healthz` is an unauthenticated readiness
+probe; provider API authentication is unchanged. The MVP lease protocol covers
+Codex device-auth slots; provider-key slots remain control/monolith-only.
+
+Native `/k/<key>/backend-api/codex/` responses, compact, WebSocket and passthrough
+paths use the same credential lease and rejected-token hooks; native request
+bodies and forwarding headers keep their upstream behavior. Pool-owned refresh,
+usage, metadata and reset-credit calls remain on control through
+`sendCodexOwnRequest`. CLI priming is rejected on connection before reading or
+creating an auth file. Raw auth-file access, local refresh, login job creation
+and the alternate auth-verification save path also enforce the role boundary.
+
+`deploy/roles` defines the optional private Docker bridge and loopback ports
+9100 (HAProxy), 9180 (control), 9181/9182 (connection diagnostics). Control alone
+mounts external `codex-exp-pool-data`; the operator must first stop its former
+writer. Connection runtime volumes are separate. HAProxy uses only pre-send
+connection-failure redispatch, never status/timeout/post-send retries, and
+passes WebSocket upgrades with a long tunnel timeout. Its one-entry persistence
+table keeps healthy backup selected until explicit failback; draining clears
+the table so persistence cannot bypass drain. The administrative runtime socket
+binds only to `127.0.0.1:9999` inside the gateway, never to the bridge or host.
+Upgrade drain/ready commands use `docker exec` and the gateway image's BusyBox
+`nc`, and treat nonempty HAProxy replies as errors even if `nc` exits zero.
+Upgrade control first and wait for health before rolling
+connections; running connections cover its restart with their bounded cached-lease
+offline tolerance. Connection upgrades probe on disposable volumes, drain/replace
+backup before main, stop with 150s grace, and explicitly fail back at the end.
+Stopped old containers remain available for automatic rollback until replacement
+health and HAProxy readiness succeed; no two writers run on a runtime volume.
+Replacements are ordinary Compose service containers, including when migrating
+one-offs left by the old script, so later Compose up/ps remains supported.
+The first ordinary up may reconcile the temporary container-name override and
+restart connections. Grace expiry can
+interrupt streams/sockets. Cross-node statistics, sticky/WS migration, automatic
+failback orchestration, control HA, and the existing login/refresh race fix are
+deferred. Role deployment is optional; the default single-container contract
+and its response bytes do not change.
+
 ## 3. Persistent Data Layout
 
 All mutable and sensitive data must live under `/data`.
