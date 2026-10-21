@@ -41,6 +41,11 @@ type poolRole struct {
 	identities  map[string]string
 	lastState   time.Time
 	online      bool
+
+	// Request statistics are protected by app.mu, like the local state they
+	// snapshot. Pending throughput stays memory-only, just like its chart.
+	reported          roleStatsBaseline
+	pendingThroughput []*throughputMeasurement
 }
 
 func (a *app) isConnection() bool { return a.role != nil && a.role.name == "connection" }

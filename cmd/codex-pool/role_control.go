@@ -61,6 +61,7 @@ func (a *app) serveControlUntilStopped(ctx context.Context, public net.Listener)
 func (a *app) controlInternalMux() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /internal/state", a.handleRoleState)
+	mux.HandleFunc("POST /internal/stats", a.handleRoleStats)
 	mux.HandleFunc("POST /internal/credentials/{account}", a.handleRoleCredentials)
 	mux.HandleFunc("POST /internal/credentials/{account}/rejected", a.handleRoleCredentials)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

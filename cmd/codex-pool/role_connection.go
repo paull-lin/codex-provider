@@ -20,6 +20,7 @@ import (
 type connectionRuntime struct {
 	state
 	Identities map[string]string `json:"controlIdentities"`
+	Reported   roleStatsBaseline `json:"reportedStats"`
 }
 
 func (a *app) loadConnection() error {
@@ -38,6 +39,7 @@ func (a *app) loadConnection() error {
 	a.state = runtime.state
 	a.state.LegacyThroughputBuckets = nil
 	a.role.identities = runtime.Identities
+	a.role.reported = runtime.Reported
 	// A restart cannot serve from stale persisted authority. Obtain an initial
 	// snapshot before listening; leases intentionally start empty.
 	return a.pollControl(context.Background())
@@ -47,7 +49,7 @@ func (a *app) saveConnectionLocked() error {
 	a.state.UpdatedAt = time.Now().UTC()
 	a.role.mu.RLock()
 	defer a.role.mu.RUnlock()
-	return writeJSONAtomic(filepath.Join(a.dataDir, "state", "runtime.json"), connectionRuntime{state: a.state, Identities: a.role.identities})
+	return writeJSONAtomic(filepath.Join(a.dataDir, "state", "runtime.json"), connectionRuntime{state: a.state, Identities: a.role.identities, Reported: a.role.reported})
 }
 
 func (a *app) startControlPoller(ctx context.Context) {
@@ -82,8 +84,11 @@ func (a *app) controlRequest(ctx context.Context, method, path string, body []by
 		return 0, errors.New("control unavailable")
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return response.StatusCode, fmt.Errorf("control returned HTTP %d", response.StatusCode)
+	}
+	if out == nil {
+		return response.StatusCode, nil
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, 8<<20)).Decode(out); err != nil {
 		return response.StatusCode, errors.New("invalid control response")
@@ -103,7 +108,15 @@ func (a *app) pollControl(ctx context.Context) error {
 		a.role.mu.Unlock()
 		return err
 	}
-	return a.applyControlSnapshot(snapshot, time.Now().UTC())
+	if err := a.applyControlSnapshot(snapshot, time.Now().UTC()); err != nil {
+		return err
+	}
+	// Reporting failure must not make a fresh authority snapshot unavailable,
+	// including during startup against a control that has not upgraded yet.
+	if err := a.reportConnectionStats(ctx); err != nil {
+		a.logger.Print("control stats report unavailable; retaining unreported statistics")
+	}
+	return nil
 }
 
 func roleIdentity(item account) string {
@@ -145,6 +158,7 @@ func (a *app) applyControlSnapshot(snapshot roleSnapshot, now time.Time) error {
 	for id, identity := range r.identities {
 		if identities[id] != identity {
 			a.clearAccountIdentityScopedStateLocked(id)
+			a.clearReportedAccountStatsLocked(id)
 			// Upstream's new turn-state registry keys issuers by local slot ID.
 			// Keep a non-slot tombstone: deleting an old issuer would fall back to
 			// the newly rebound sticky slot and send old identity state to it.
