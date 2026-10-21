@@ -301,16 +301,16 @@ sh deploy/roles/upgrade.sh YOUR_PREBUILT_IMAGE
 ```
 
 The script discovers containers in the selected project, preserves production
-overrides, probes on a disposable volume, drains/upgrades backup then main, and
-explicitly fails back. Do not run other lifecycle commands concurrently. Its
+overrides, probes on a disposable volume, and drains/upgrades backup then main;
+HAProxy fails back to main automatically after ~30s of healthy checks. Do not run other lifecycle commands concurrently. Its
 old connection is stopped before its replacement starts on the runtime volume.
 Inspect interrupted leftovers before rerunning. HAProxy's admin socket remains
 `127.0.0.1:9999` **inside gateway**, never a host port:
 
 ```sh
-roles exec -T gateway sh -c 'echo "set server connections/connection-main state drain; clear table connections" | nc -w 2 127.0.0.1 9999'
-# Explicit failback:
-roles exec -T gateway sh -c 'echo "set server connections/connection-main state ready; clear table connections" | nc -w 2 127.0.0.1 9999'
+roles exec -T gateway sh -c 'echo "set server connections/connection-main state drain" | nc -w 2 127.0.0.1 9999'
+# Undo the drain (failback itself is automatic):
+roles exec -T gateway sh -c 'echo "set server connections/connection-main state ready" | nc -w 2 127.0.0.1 9999'
 ```
 
 - Request routing/latency/failure/client-agent statistics and sticky/lineage/WS

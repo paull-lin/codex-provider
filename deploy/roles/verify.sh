@@ -58,14 +58,24 @@ docker run --rm --network host -e TEST_PORT="$CODEX_ROLES_PORT" node:22-bookworm
 fetch("http://127.0.0.1:"+process.env.TEST_PORT+"/admin",{signal:AbortSignal.timeout(3000)})
  .then(async r=>{require("assert/strict").equal((await r.json()).backend,"control");console.log("PASS published test port routes admin to control")})
  .catch(e=>{console.error(e);process.exit(1)});'
-# Close only this disposable primary: exercise connect failure, sticky backup,
-# and explicit failback using the same loopback admin socket as upgrade.sh.
+# Close only this disposable primary: exercise connect failure, backup while
+# main is not yet stable (rise 15 x 2 s), then automatic failback.
 compose stop -t 1 connection-main
 check selected connection-backup
 compose start connection-main
 sleep 5
 check selected connection-backup
-admin 'set server connections/connection-main state ready; clear table connections'
+failback=""
+for attempt in $(seq 1 30); do
+  sleep 2
+  if check selected connection-main >/dev/null 2>&1; then failback=$((5 + 2 * attempt)); break; fi
+done
+[ -n "$failback" ] || { echo 'FAIL main did not take traffic back' >&2; exit 1; }
+echo "PASS automatic failback to main about ${failback}s after restart"
+# upgrade.sh relies on drain alone (no stick table) to move new requests.
+admin 'set server connections/connection-main state drain'
+check selected connection-backup
+admin 'set server connections/connection-main state ready'
 check selected connection-main
 compose down -v
 export COMPOSE_FILE=$BASE_FILES

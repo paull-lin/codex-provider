@@ -82,7 +82,7 @@ cannot be acquired while control is down. Wait for healthy control before
 restarting connections, since their startup requires a fresh snapshot.
 
 The script probes each new image on a disposable volume, drains/upgrades backup,
-then drains/upgrades main, with an explicit failback at the end. Each old
+then drains/upgrades main; HAProxy fails back to main on its own. Each old
 container gets 150s to stop and stays available for automatic rollback until
 its replacement is healthy and HAProxy readiness succeeds. Only one container
 runs on each runtime volume. Replacements are ordinary Compose service
@@ -101,12 +101,12 @@ Use the rolling script when draining and rollback are required for an upgrade.
 Manual drain (Docker only):
 
 ```sh
-docker exec codex-roles-gateway sh -c 'echo "set server connections/connection-main state drain; clear table connections" | nc -w 2 127.0.0.1 9999'
+docker exec codex-roles-gateway sh -c 'echo "set server connections/connection-main state drain" | nc -w 2 127.0.0.1 9999'
 ```
 
-Restore with `set server connections/connection-main state ready`, then
-`clear table connections` for explicit failback. HAProxy remembers healthy
-backup selection; a gateway restart loses it. Never enable 5xx/timeout retries:
+Restore with `set server connections/connection-main state ready`. Failback is
+automatic: once main passes 15 consecutive health checks (about 30s), new
+requests go to main again; requests already on backup finish there. Never enable 5xx/timeout retries:
 only pre-send `conn-failure` is retried. Drain stops new assignments; existing
 HTTP/WS sessions can continue until the pool's 120s shutdown grace ends. Long
 turns or idle sockets may disconnect and reconnect. Sticky/lineage and stats

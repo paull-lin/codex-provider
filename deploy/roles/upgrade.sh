@@ -37,9 +37,7 @@ healthy() {
   done
   return 1
 }
-drain() {
-  gateway "set server connections/$1 state drain; clear table connections"
-}
+drain() { gateway "set server connections/$1 state drain"; }
 ready() { gateway "set server connections/$1 state ready"; }
 
 ROLLBACK=""
@@ -129,6 +127,5 @@ replace connection-backup "$BACKUP"
 healthy "$BACKUP"
 replace connection-main "$MAIN"
 healthy "$MAIN"
-# Explicit failback for this upgrade; ordinary recovery never does it.
-gateway 'clear table connections'
-echo 'Connection upgrade complete; main ready, backup retained'
+# HAProxy fails back by itself once main passes its rise checks (~30 s).
+echo 'Connection upgrade complete; main takes traffic back after ~30 s of healthy checks'
