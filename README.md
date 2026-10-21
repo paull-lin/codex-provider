@@ -132,6 +132,26 @@ Set `CODEX_POOL_API_KEY` in Codex's environment to the pool's client key. Model
 aliases and a `(thinking-tier)` suffix are translated on this path. The checked-in
 [test config](test/codex-config.toml) is the same contract.
 
+### Claude Code
+
+The [roles deployment](deploy/roles/README.md) also serves the Anthropic
+Messages API (`/v1/messages`) through an [adapter](adapters/anthropic/README.md)
+that runs Claude Code turns on the pooled Codex accounts. Point Claude Code at the
+bare host, without `/v1`, with the same client key:
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://<pool-host>",
+    "ANTHROPIC_API_KEY": "<pool-api-key>"
+  }
+}
+```
+
+Save it as, for example, `~/.claude/settings.codex-pool.json` and run
+`claude --settings ~/.claude/settings.codex-pool.json`. Model mapping, reasoning
+effort and limits are in the [adapter README](adapters/anthropic/README.md).
+
 ### Other clients
 
 `/v1` also serves `GET /v1/models`, `POST /v1/responses` (and `/compact`),

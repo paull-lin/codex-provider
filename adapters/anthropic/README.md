@@ -38,6 +38,7 @@ this container refers to the adapter container, not the host or pool container.
 | `ANTHROPIC_ADAPTER_MODEL_MAP` | `claude-opus*=gpt-6-astra,claude-sonnet*=gpt-6.1-sol,claude-haiku*=gpt-5.6-luna,default=gpt-6.1-sol` |
 | `ANTHROPIC_ADAPTER_ORIGINATOR` | `codex_exec` |
 | `ANTHROPIC_ADAPTER_USER_AGENT` | `codex_exec/0.163.0 (Alpine Linux 3.21.7; x86_64) unknown (codex_exec; 0.163.0)` |
+| `ANTHROPIC_ADAPTER_REASONING_EFFORT` | unset: follow Claude Code's thinking settings; `low`/`medium`/`high`/`xhigh`: use this effort for every request. The roles stack sets `medium`. |
 
 Model rules match in order, as exact names or trailing-star prefixes. `default=`
 or `*=` provides the fallback; absent a fallback, unmatched models use
@@ -45,9 +46,51 @@ or `*=` provides the fallback; absent a fallback, unmatched models use
 Codex CLI 0.163 format and are configurable to match the operator's environment.
 They do not identify a real native Codex client or reproduce its TLS transport.
 
-## Claude Code settings
+## Using Claude Code with the pool
 
-Set these in Claude Code's `settings.json` (replace the URL and placeholder key):
+With the roles stack ([deploy/roles](../../deploy/roles/README.md)), the gateway
+serves `/v1/messages` on the same public URL as Codex and the dashboard, so
+Claude Code needs only that URL and the pool's client key
+(`CODEX_POOL_API_KEY`, the same key Codex puts in `/k/<pool-api-key>/`).
+
+1. Write a settings file, for example `~/.claude/settings.codex-pool.json`
+   (or put the `env` block in `~/.claude/settings.json` to make it the default):
+
+   ```json
+   {
+     "env": {
+       "ANTHROPIC_BASE_URL": "https://<pool-host>",
+       "ANTHROPIC_API_KEY": "<pool-api-key>"
+     }
+   }
+   ```
+
+   Use the bare host: Claude Code appends `/v1/messages` itself, so a base URL
+   ending in `/v1` produces `/v1/v1/messages` and fails.
+
+2. Start Claude Code with it and check one turn:
+
+   ```sh
+   claude --settings ~/.claude/settings.codex-pool.json -p "Reply with exactly: POOL-OK"
+   ```
+
+   Interactive use, tools (Read, Bash, edits), `--continue` and streaming work as
+   usual. The request appears in the pool dashboard's totals within about 5s.
+
+3. Pick models with Claude names (`/model opus|sonnet|haiku`); the adapter's
+   `ANTHROPIC_ADAPTER_MODEL_MAP` decides which Codex model runs. Reasoning effort
+   is fixed by `ANTHROPIC_ADAPTER_REASONING_EFFORT` when set (`medium` in the
+   roles stack), otherwise derived from Claude Code's thinking settings.
+
+Claude traffic always goes to `connection-backup`, so a backup upgrade briefly
+interrupts it, and Codex failover does not apply to it. Keep the settings file
+private: the key grants inference on every pooled account, and HTTPS is required
+because it is sent on every request.
+
+### Direct adapter (without the gateway)
+
+For a standalone adapter, point Claude Code at the adapter instead (replace the
+URL and placeholder key):
 
 ```json
 {
@@ -132,9 +175,10 @@ adapter follows no upstream redirects and logs neither keys nor request bodies.
 Batches, files, citations, web search/server tools, prompt-cache breakpoints,
 WebSocket upstream and a dedicated adapter UI are deferred. This
 adapter provides wire compatibility; underlying model behavior and reasoning
-summaries differ from native Anthropic models. Live Claude Code ↔ real backup
-pool operation requires operator validation; the automated tests use fake pools
-and synthetic recorded-style SSE, with no real credentials.
+summaries differ from native Anthropic models. The automated tests use fake
+pools and synthetic recorded-style SSE, with no real credentials; the roles
+deployment has been validated with real Claude Code (chat, tool use,
+`--continue`, streaming) against real accounts.
 
 ## Docker-only verification
 
