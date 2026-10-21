@@ -313,9 +313,10 @@ roles exec -T gateway sh -c 'echo "set server connections/connection-main state 
 roles exec -T gateway sh -c 'echo "set server connections/connection-main state ready" | nc -w 2 127.0.0.1 9999'
 ```
 
-- Request routing/latency/failure/client-agent statistics and sticky/lineage/WS
-  state live on connection nodes. They are **not shown as aggregate traffic in
-  control UI**, do not migrate during failover, and are not merged on rollback.
+- Request statistics (counts, prompt cache, health, routing events, throughput)
+  are reported to control every 5s and shown as main + backup totals in the
+  control UI. Client-agent data and sticky/lineage/WS state stay on connection
+  nodes and do not migrate during failover.
 - Adapter traffic goes directly to backup and does not obey the HAProxy
   `connections` backend's drain state. Backup upgrades can interrupt Claude
   traffic; schedule a quiet window for it. There is no adapter failover.
