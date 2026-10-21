@@ -54,13 +54,22 @@ original roles patch; "new guard" means added during this rebase.
 
 ## Integration size and regression coverage
 
-There are **15 behavioral integration sites** in upstream Go files:
-12 in `main.go`, one in `responses_ws.go`, one in `codex_own.go`, and one in
+There are **16 behavioral integration sites** in upstream Go files:
+13 in `main.go`, one in `responses_ws.go`, one in `codex_own.go`, and one in
 `codex_prime.go`, plus the `app.role` field. Nine sites came from the original
 roles patch; six new early-return guards protect raw auth read, local refresh,
 login creation, alternate save, own requests and CLI priming. The new turn-state
 cleanup stays in `role_connection.go`. `native_codex.go`, `logfile.go`, the
 supervisor and Dockerfile need no changes.
+
+The statistics forwarding change adds exactly one upstream-file hook:
+`main.go:recordThroughputMeasurementLocked` calls `queueRoleThroughputLocked`
+only on connection nodes, retaining the existing local chart path. All delta,
+bounded queue, persistence, private endpoint and merge logic lives in `role_*.go`.
+The queue is memory-only, capped at 4096, and drops oldest measurements.
+Control writes stats to runtime.json only, never config.json, so the
+authority snapshot version does not churn. No upstream request,
+header, transport, parsing, classification or retry behavior changes.
 
 Role tests cover snapshot sanitization/persistence, lease/CAS refresh, outage
 bounds, identity cleanup/restart, admin denial, direct control-only boundaries,
@@ -86,16 +95,30 @@ image tag. The shape-check copy also ran Git initialization from `/tmp` because
 this worktree's `.git` pointer is outside its isolated container. No comparison
 logic, watched source, wire fixture or acceptance criterion was changed.
 
+Statistics validation on 2026-10-21 (Docker only): `gofmt`, `go vet ./...`,
+`go test ./...` (203.446s), and `go test -race ./cmd/codex-pool -run TestRoleStats
+-count=1` (40.366s) passed. `docker build -t codex-pool:roles-stats .` passed.
+The isolated Compose project `roles-stats-verify-20261021-a` used fresh volumes,
+an internal network, random loopback ports, synthetic credentials, and a mock
+using pinned Codex response/usage fixtures. Gateway traffic produced two main
+and four backup successes (one through the existing Claude adapter image).
+Control reported six requests, 600 input/240 cached/360 cache-write tokens, six
+throughput measurements and six routing events. Cache reset retained a one-request
+window, connection restarts did not recount totals, and stats reports preserved
+the snapshot version. Public stats returned 404; the private endpoint required
+the secret. No connection config/auth files were created. The throwaway stack,
+its three volumes and network were removed; protected deployments were untouched.
+
 ## Limits before deployment
 
 - No live account data or real provider calls were used; no deployment, upgrade,
   drain, existing container/volume operation, commit or push was performed.
 - Connection `ClientAgents` do not travel back to control. Control own calls
   therefore use its own last observed agent or upstream's pinned-CLI fallback,
-  not necessarily the latest client seen by a connection. Cross-node telemetry
-  propagation is outside this minimal broker patch.
+  not necessarily the latest client seen by a connection. Client-agent telemetry
+  propagation remains outside this statistics patch.
 - Existing MVP limits remain: polling delays revocation, control is not HA,
-  in-flight work is not cancelled by snapshots, and routing/statistics/socket
+  in-flight work is not cancelled by snapshots, and routing/socket
   state do not migrate between connections. Existing control login/refresh races
   are not redesigned here.
 - The wire harness exercises default-role native wire compatibility. Role

@@ -5777,6 +5777,10 @@ func (a *app) finishThroughputMeasurementLocked(measurement *throughputMeasureme
 }
 
 func (a *app) recordThroughputMeasurementLocked(measurement throughputMeasurement) {
+	// Roles report completed measurements without changing local chart behavior.
+	if a.isConnection() {
+		a.queueRoleThroughputLocked(measurement)
+	}
 	completedAt := measurement.CompletedAt
 	if completedAt.IsZero() {
 		completedAt = time.Now().UTC()

@@ -315,7 +315,7 @@ login/verification accounts with 409. Unknown/expired resulting JWT expiry is
 refused. The internal API accepts only `X-Codex-Pool-Internal-Secret`, compares
 it in constant time, fails closed when unset, and sets `Cache-Control: no-store`.
 This secret never grants access to public/provider/admin routes.
-The normal `CODEX_POOL_ADDR` listener returns `404` for the state and credential
+The normal `CODEX_POOL_ADDR` listener returns `404` for the state, stats and credential
 paths, even with the secret; only the internal listener serves them. The
 internal listener shuts down with the normal listener and is not published by
 the roles Compose stack. Connection nodes use `CODEX_POOL_CONTROL_URL` pointing
@@ -347,6 +347,31 @@ and skips credential reconciliation, quota polling/priming and admin mutations
 probe; provider API authentication is unchanged. The MVP lease protocol covers
 Codex device-auth slots; provider-key slots remain control/monolith-only.
 
+After each successful state poll, connections send nonempty request-statistic
+deltas to `POST /internal/stats` on the same secret-protected internal listener
+(8 MiB body limit). Control's existing dashboard combines main and backup
+traffic, including Claude adapter requests routed through backup. Reports add
+RequestCount, SuccessCount, FailureCount, UpstreamResponseFailedCount and
+StreamIncompleteCount, plus every exported uint64 prompt-cache field per key;
+account/model/agent identities are preserved. Prompt-cache reset baselines stay
+control-owned. Account health keeps the newest success and failure timestamps
+and the newest failure's reason/consecutive count. Routing events newer than
+the reporter's acknowledged timestamp are merged chronologically with the
+existing retention and cap. Unknown/deleted account entries are discarded.
+
+Delivery is at-least-once: under healthy polling statistics appear within about
+5s plus request time; failures retain the baseline for a later accumulated
+retry, and timeout/crash ambiguity can double-count a report. Acknowledged
+totals persist atomically with connection runtime so restart does not resend
+lifetime totals. Completed throughput measurements use a 4096-entry memory-only
+queue (drop oldest when full) and control's existing chart recorder; queued
+measurements are lost on connection restart and chart history on control
+restart. Routing events remain bounded locally during outages. Control persists
+stats to runtime.json only (never config.json), so the state snapshot version
+does not change. Sticky/lineage/thread/
+response bindings, cooldowns and ClientAgents are not reported; no per-node
+breakdown or admin UI changes are introduced.
+
 Native `/k/<key>/backend-api/codex/` responses, compact, WebSocket and passthrough
 paths use the same credential lease and rejected-token hooks; native request
 bodies and forwarding headers keep their upstream behavior. Pool-owned refresh,
@@ -376,7 +401,7 @@ Replacements are ordinary Compose service containers, including when migrating
 one-offs left by the old script, so later Compose up/ps remains supported.
 The first ordinary up may reconcile the temporary container-name override and
 restart connections. Grace expiry can
-interrupt streams/sockets. Cross-node statistics, sticky/WS migration, automatic
+interrupt streams/sockets. Sticky/WS migration, automatic
 failback orchestration, control HA, and the existing login/refresh race fix are
 deferred. Role deployment is optional; the default single-container contract
 and its response bytes do not change.

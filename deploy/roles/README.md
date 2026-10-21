@@ -31,7 +31,7 @@ backup diagnostics `9182`. Control's credential broker is on the private-only
 OAuth/Codex.
 `CODEX_POOL_INTERNAL_ADDR` defaults to `0.0.0.0:8318`; connection nodes use
 `CODEX_POOL_CONTROL_URL=http://control:8318`. Keep these ports aligned if changed.
-The published control port returns 404 for `/internal/state` and
+The published control port returns 404 for `/internal/state`, `/internal/stats` and
 `/internal/credentials/*`, even with the internal secret. The private listener
 still requires that secret; `/internal/inflight` stays loopback-only on `8317`.
 HAProxy's administrative socket `9999` is loopback-only inside the gateway and
@@ -42,8 +42,23 @@ Connection admin writes/login return 404.
 Only Codex device-auth slots are leased in this MVP. Provider API-key slots
 remain available on control/monolith but are disabled in connection snapshots;
 snapshots contain no API keys or OAuth tokens. Unknown JWT expiry is refused.
-Use matching routing/prompt-cache/quota env settings across nodes. Control UI
-statistics describe control only; login/refresh races remain deferred.
+Use matching routing/prompt-cache/quota env settings across nodes.
+Control's existing dashboard totals combine main and backup request statistics,
+including Claude adapter traffic through backup; login/refresh races remain deferred.
+
+After each successful 5s state poll, connections POST nonempty counter and
+per-key prompt-cache deltas, account health, recent routing events and completed
+throughput measurements to the secret-protected private `/internal/stats` endpoint
+(8 MiB body limit). Delivery is at-least-once with about 5s delay plus request
+time while healthy. Failed reports retain their baseline and retry accumulated
+deltas; a timeout/crash after control accepts a report can cause double counting.
+Acknowledged baselines persist with connection runtime, so restarts do not resend
+lifetime totals. Control owns cache-reset baselines and ignores deleted-account
+entries; statistics do not change the `/internal/state` snapshot version.
+Throughput uses a memory-only pending queue capped at 4096 (drop oldest); restart
+loses pending measurements, and control restart clears its chart history. Routing
+events keep the existing TTL/cap, including during an outage. No per-node view,
+bindings, cooldowns or ClientAgents are forwarded.
 
 Polls run every 5s; disable/pending changes apply on the next successful poll.
 During outages only cached leases serve, until token expiry or 30m since the
@@ -109,5 +124,5 @@ automatic: once main passes 15 consecutive health checks (about 30s), new
 requests go to main again; requests already on backup finish there. Never enable 5xx/timeout retries:
 only pre-send `conn-failure` is retried. Drain stops new assignments; existing
 HTTP/WS sessions can continue until the pool's 120s shutdown grace ends. Long
-turns or idle sockets may disconnect and reconnect. Sticky/lineage and stats
-do not migrate between connection nodes.
+turns or idle sockets may disconnect and reconnect. Sticky/lineage state does
+not migrate between connection nodes; each node reports its statistics to control.
