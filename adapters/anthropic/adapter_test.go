@@ -345,7 +345,7 @@ func TestRequestMappingAndConfiguration(t *testing.T) {
 	}{
 		{`{"type":"auto"}`, "auto"}, {`{"type":"any"}`, "required"}, {`{"type":"none"}`, "none"}, {`{"type":"tool","name":"read"}`, map[string]any{"type": "function", "name": "read"}},
 	} {
-		got, err := mapToolChoice(json.RawMessage(tc.raw))
+		got, err := mapToolChoice(json.RawMessage(tc.raw), nil)
 		if err != nil || !reflect.DeepEqual(got, tc.want) {
 			t.Fatalf("choice=%#v %v", got, err)
 		}

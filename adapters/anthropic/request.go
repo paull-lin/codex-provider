@@ -31,10 +31,12 @@ type anthropicMessage struct {
 	Content json.RawMessage `json:"content"`
 }
 type anthropicTool struct {
-	Type        string         `json:"type,omitempty"`
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	InputSchema map[string]any `json:"input_schema"`
+	Type           string         `json:"type,omitempty"`
+	Name           string         `json:"name"`
+	Description    string         `json:"description"`
+	InputSchema    map[string]any `json:"input_schema"`
+	AllowedDomains []string       `json:"allowed_domains,omitempty"`
+	UserLocation   map[string]any `json:"user_location,omitempty"`
 }
 type inputBlock struct {
 	Type      string          `json:"type"`
@@ -220,6 +222,12 @@ func mapRequest(req anthropicRequest) ([]any, error) {
 				}
 			case "redacted_thinking":
 				// Foreign reasoning is not recoverable on the Responses backend.
+			case "server_tool_use", "web_search_tool_result":
+				// Hosted search has already run upstream. Replay the assistant's
+				// summary text, not synthetic function calls or opaque search results.
+				if message.Role != "assistant" {
+					return nil, fmt.Errorf("server tool history requires assistant role")
+				}
 			default:
 				return nil, fmt.Errorf("unsupported message content block")
 			}
@@ -311,6 +319,21 @@ func restoreReasoning(signature string) map[string]any {
 func mapTools(tools []anthropicTool) ([]any, error) {
 	out := make([]any, 0, len(tools))
 	for _, t := range tools {
+		if strings.HasPrefix(t.Type, "web_search_") {
+			// Native CLI 0.163 capture (WIRE.md); Codex rust-v0.163.0
+			// core/tests/suite/web_search.rs verifies live access, filters/location.
+			// Keep include unchanged: sources are optional, citations are fallback.
+			tool := map[string]any{"type": "web_search", "external_web_access": true, "search_content_types": []string{"text", "image"}}
+			if t.AllowedDomains != nil {
+				tool["filters"] = map[string]any{"allowed_domains": t.AllowedDomains}
+			}
+			if t.UserLocation != nil {
+				tool["user_location"] = t.UserLocation
+			}
+			// max_uses and blocked_domains have no mapping in this native shape.
+			out = append(out, tool)
+			continue
+		}
 		if (t.Type != "" && t.Type != "custom") || t.Name == "" || t.InputSchema == nil {
 			return nil, fmt.Errorf("only custom tools with name and input_schema are supported")
 		}
@@ -318,7 +341,7 @@ func mapTools(tools []anthropicTool) ([]any, error) {
 	}
 	return out, nil
 }
-func mapToolChoice(raw json.RawMessage) (any, error) {
+func mapToolChoice(raw json.RawMessage, tools []anthropicTool) (any, error) {
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil, nil
 	}
@@ -338,6 +361,12 @@ func mapToolChoice(raw json.RawMessage) (any, error) {
 		return "required", nil
 	case "tool":
 		if choice.Name != "" {
+			for _, tool := range tools {
+				if tool.Name == choice.Name && strings.HasPrefix(tool.Type, "web_search_") {
+					// Hosted searches are not client-executed named functions.
+					return "auto", nil
+				}
+			}
 			return map[string]any{"type": "function", "name": choice.Name}, nil
 		}
 	}

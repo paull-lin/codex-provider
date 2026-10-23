@@ -14,15 +14,18 @@ import (
 )
 
 type responseItem struct {
-	Type             string `json:"type"`
-	ID               string `json:"id"`
-	CallID           string `json:"call_id"`
-	Name             string `json:"name"`
-	Arguments        string `json:"arguments"`
-	EncryptedContent string `json:"encrypted_content"`
+	Type             string           `json:"type"`
+	ID               string           `json:"id"`
+	CallID           string           `json:"call_id"`
+	Name             string           `json:"name"`
+	Arguments        string           `json:"arguments"`
+	EncryptedContent string           `json:"encrypted_content"`
+	Status           string           `json:"status"`
+	Action           *webSearchAction `json:"action"`
 	Content          []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type        string            `json:"type"`
+		Text        string            `json:"text"`
+		Annotations []webSearchSource `json:"annotations"`
 	} `json:"content"`
 	Summary []struct {
 		Text string `json:"text"`
@@ -43,11 +46,12 @@ type responseData struct {
 	} `json:"incomplete_details"`
 }
 type responseEvent struct {
-	Type        string        `json:"type"`
-	OutputIndex int           `json:"output_index"`
-	Delta       string        `json:"delta"`
-	Item        responseItem  `json:"item"`
-	Response    *responseData `json:"response"`
+	Type        string          `json:"type"`
+	OutputIndex int             `json:"output_index"`
+	Delta       string          `json:"delta"`
+	Item        responseItem    `json:"item"`
+	Annotation  webSearchSource `json:"annotation"`
+	Response    *responseData   `json:"response"`
 	raw         []byte
 	err         error
 }
@@ -125,6 +129,7 @@ type outputBlock struct {
 	item                                responseItem
 	index                               int
 	started, closed, textSeen, argsSeen bool
+	searchID                            string
 }
 type converter struct {
 	id, model        string
@@ -132,6 +137,8 @@ type converter struct {
 	blocks           map[int]*outputBlock
 	order            []*outputBlock
 	next             int
+	searches         int
+	citations        []webSearchSource
 	emit             func(string, map[string]any) error
 }
 
@@ -170,6 +177,12 @@ func (c *converter) block(index int, item responseItem) *outputBlock {
 	if item.Name != "" {
 		b.item.Name = item.Name
 	}
+	if item.Status != "" {
+		b.item.Status = item.Status
+	}
+	if item.Action != nil {
+		b.item.Action = item.Action
+	}
 	return b
 }
 func (c *converter) startBlock(b *outputBlock) error {
@@ -191,6 +204,10 @@ func (c *converter) startBlock(b *outputBlock) error {
 		}
 		content = map[string]any{"type": "tool_use", "id": b.item.CallID, "name": b.item.Name, "input": map[string]any{}}
 		c.hadTool = true
+	case "web_search_call":
+		b.searchID = webSearchID(b.item.ID, c.next)
+		content = map[string]any{"type": "server_tool_use", "id": b.searchID, "name": "web_search", "input": map[string]any{}}
+		c.searches++
 	default:
 		return fmt.Errorf("unsupported upstream output item")
 	}
@@ -217,6 +234,15 @@ func (c *converter) closeBlock(b *outputBlock) error {
 }
 func (c *converter) done(index int, item responseItem) error {
 	b := c.block(index, item)
+	// A terminal response may carry citations absent from output_item.done.
+	// Read them even if text has already been emitted and its block closed.
+	for _, part := range item.Content {
+		if part.Type == "output_text" {
+			for _, annotation := range part.Annotations {
+				c.addCitation(annotation)
+			}
+		}
+	}
 	if b.closed {
 		return nil
 	}
@@ -247,6 +273,8 @@ func (c *converter) done(index int, item responseItem) error {
 				return err
 			}
 		}
+	case "web_search_call":
+		return c.searchUse(b)
 	case "function_call":
 		if err := c.startBlock(b); err != nil {
 			return err
@@ -279,6 +307,8 @@ func (c *converter) step(e responseEvent) (bool, error) {
 		b := c.block(e.OutputIndex, responseItem{Type: "message"})
 		b.textSeen = true
 		return false, c.delta(b, "text_delta", "text", e.Delta)
+	case "response.output_text.annotation.added":
+		c.addCitation(e.Annotation)
 	case "response.reasoning_summary_text.delta":
 		b := c.block(e.OutputIndex, responseItem{Type: "reasoning"})
 		b.textSeen = true
@@ -299,11 +329,21 @@ func (c *converter) step(e responseEvent) (bool, error) {
 			}
 		}
 		for _, b := range c.order {
+			// Some streams supply only an added search item. Missing action is
+			// legal in Codex's model; still produce a paired use/result, once.
+			if b.item.Type == "web_search_call" && !b.closed {
+				if err := c.searchUse(b); err != nil {
+					return false, err
+				}
+			}
 			if err := c.closeBlock(b); err != nil {
 				return false, err
 			}
 		}
 		if err := c.start(); err != nil {
+			return false, err
+		}
+		if err := c.searchResults(); err != nil {
 			return false, err
 		}
 		reason := "end_turn"
@@ -315,7 +355,10 @@ func (c *converter) step(e responseEvent) (bool, error) {
 		}
 		u := e.Response.Usage
 		cached := min(max(0, u.Details.Cached), max(0, u.Input))
-		usage := map[string]int{"input_tokens": max(0, u.Input-cached), "cache_read_input_tokens": cached, "output_tokens": max(0, u.Output)}
+		usage := map[string]any{"input_tokens": max(0, u.Input-cached), "cache_read_input_tokens": cached, "output_tokens": max(0, u.Output)}
+		if c.searches > 0 {
+			usage["server_tool_use"] = map[string]int{"web_search_requests": c.searches}
+		}
 		if err := c.send("message_delta", map[string]any{"delta": map[string]any{"stop_reason": reason, "stop_sequence": nil}, "usage": usage}); err != nil {
 			return false, err
 		}
@@ -362,7 +405,7 @@ func (a *collector) emit(kind string, event map[string]any) error {
 		case "thinking":
 			b.content["thinking"] = b.text.String()
 			b.content["signature"] = b.signature.String()
-		case "tool_use":
+		case "tool_use", "server_tool_use":
 			if b.args.Len() > 0 {
 				var input map[string]any
 				if json.Unmarshal([]byte(b.args.String()), &input) != nil || input == nil {
