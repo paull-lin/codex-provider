@@ -172,7 +172,7 @@ func (a *adapter) messages(w http.ResponseWriter, r *http.Request) {
 		writeAnthropicError(w, 400, "invalid_request_error", err.Error())
 		return
 	}
-	choice, err := mapToolChoice(req.ToolChoice)
+	choice, err := mapToolChoice(req.ToolChoice, req.Tools)
 	if err != nil {
 		writeAnthropicError(w, 400, "invalid_request_error", err.Error())
 		return
